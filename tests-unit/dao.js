@@ -351,7 +351,6 @@ module.exports = {
 	addToArrayFieldById,
 	removeFromArrayFieldById,
 	getAllUserFields,
-
 	getAllUsers,
 
 	ERROR_USER_NOT_FOUND,
