@@ -16,6 +16,7 @@ const findUser = require('./middlewares/findUser');
 const prepareOptions = require('./middlewares/prepareOptions');
 const platformsSetUp = require('./middlewares/platformsSetUp');
 const propagateRequest = require('./middlewares/propagateRequest');
+const invalidatedToken = require('./middlewares/invalidatedToken');
 const permissions = require('./middlewares/permissions');
 const bodyParserWrapper = require('./middlewares/bodyParserWrapper');
 const pinValidation = require('./middlewares/pinValidation')();
@@ -117,6 +118,7 @@ module.exports = function () {
 			checkAccessTokenParam,
 			checkAuthHeader,
 			decodeToken,
+			invalidatedToken,
 			permissions,
 			findUser,
 			pinValidation,
