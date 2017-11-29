@@ -1,411 +1,367 @@
 'use strict';
 
 const assert = require('assert');
+const async = require('async');
+const escapeRegexp = require('escape-regexp');
+const config = require('../../config');
+const MongoClient = require('mongodb').MongoClient;
 const _ = require('lodash');
-const config = require('../config');
-const dao = require('../src/managers/dao');
-const sinon = require('sinon');
 
-const mongoClient = require('mongodb').MongoClient;
+const TIME_TO_REFRESH = 1000 * 60 * 60;
+const ERROR_USER_NOT_FOUND = 'user_not_found';
+const ERROR_USERNAME_ALREADY_EXISTS = 'username_already_exists';
+const MONGO_ERR = {
+	err: 'component_error',
+	des: 'MongoDB component is not available'
+};
 
-describe('user dao', function () {
+// db connection
+const MONGODB_URI = config.db.conn;
+let db;
+let usersCollection;
+let realmsCollection;
 
-	const baseUser = {
-		id: 'a1b2c3d4e5f6',
-		username: `user1${config.allowedDomains && config.allowedDomains[0] ? config.allowedDomains[0].replace('*', '') : ''}`,
-		password: 'pass1'
+let localStoredRealms;
+let lastTimeRefresedRealms;
+
+const makeRegEx = str => new RegExp(`^${escapeRegexp(str.toLowerCase())}$`, 'i');
+
+function connect(cbk) {
+	MongoClient.connect(MONGODB_URI, function (err, connectedDb) {
+		assert.equal(err, null, err);
+		db = connectedDb;
+
+		async.parallel([
+			function (done) {
+				usersCollection = connectedDb.collection('users');
+				async.series([
+					function (next) {
+						usersCollection.ensureIndex('_id', next);
+					},
+					function (next) {
+						usersCollection.ensureIndex('username', next);
+					},
+					function (next) {
+						usersCollection.ensureIndex('password', next);
+					}
+				], done);
+			},
+			function (done) {
+				realmsCollection = connectedDb.collection('realms');
+				async.series([
+					function (next) {
+						realmsCollection.ensureIndex('_id', next);
+					},
+					function (next) {
+						realmsCollection.ensureIndex('name', next);
+					},
+					function (next) {
+						realmsCollection.ensureIndex('allowedDomains', next);
+					}
+				], done);
+			}
+		], cbk);
+
+	});
+}
+
+function disconnect(cbk) {
+	db.close(cbk);
+}
+
+function addUser(userToAdd, cbk) {
+	const user = _.clone(userToAdd);
+
+	if (!user.id) {
+		return cbk({err: 'invalid_id'}, null);
+	}
+	if (!user.username) {
+		return cbk({err: 'invalid_username'}, null);
+	}
+	user.username = user.username.toLowerCase();
+	if (!user.password) {
+		return cbk({err: 'invalid_password'}, null);
+	}
+
+	user.signUpDate = new Date().getTime();
+
+	getFromUsername(user.username, function (err) {
+		if (err) {
+			if (err.message === ERROR_USER_NOT_FOUND) {
+				user._id = user.id;
+				delete(user.id);
+
+				if (!user.roles || !user.roles.length) {
+					user.roles = ['user'];
+				}
+
+				return usersCollection.insertOne(user, function (err, insertResult) {
+					if (err) {
+						return cbk(err, null);
+					}
+
+					user._id = insertResult.insertedId;
+
+					return cbk(null, user);
+				});
+			}
+			return cbk(err);
+		}
+		return cbk({err: ERROR_USERNAME_ALREADY_EXISTS});
+	});
+}
+
+function countUsers(cbk) {
+	usersCollection.count(function (err, count) {
+		if (err) {
+			return cbk(err);
+		}
+		return cbk(null, count);
+	});
+}
+
+function findByEmail(email, callback) {
+
+	const targetEmail = makeRegEx(email);
+
+	usersCollection.count({username: targetEmail}, function (error, totalCount) {
+
+		if (error) {
+			return callback({
+				statusCode: 500,
+				body: {
+					err: 'InternalError',
+					des: 'User lookup failed'
+				}
+			});
+		}
+
+		if (totalCount) {
+			return callback(null, {available: false});
+		}
+
+		return callback(null, {available: true});
+	});
+}
+
+function findOneUser(criteria, options, cbk) {
+	usersCollection.find(criteria, options || {}).limit(1).next(function (err, user) {
+		if (err) {
+			return cbk(err);
+		}
+
+		if (!user) {
+			return cbk(new Error(ERROR_USER_NOT_FOUND));
+		}
+		return cbk(null, user);
+	});
+}
+
+function updateOne(coll, criteria, update, cbk) {
+	coll.updateOne(criteria, update, function (err, res) {
+		if (err) {
+			return cbk(err, null);
+		}
+		return cbk(null, res.modifiedCount);
+	});
+}
+
+function getFromUsername(username, cbk) {
+	if (!username) {
+		return cbk({err: 'invalid_username'});
+	}
+	findOneUser({ username: makeRegEx(username) }, {password: 0}, cbk);
+}
+
+function getFromUsernamePassword(username, password, cbk) {
+	findOneUser({ username:  makeRegEx(username), password }, {password: 0}, cbk);
+}
+
+function getAllUserFields(username, cbk) {
+	if (!username) {
+		return cbk({err: 'invalid_username'}, null);
+	}
+	findOneUser({ username: makeRegEx(username) }, {}, cbk);
+}
+
+function deleteAllUsers(cbk) {
+	usersCollection.deleteMany({}, function (err) {
+		return cbk(err);
+	});
+}
+
+function getFromId(id, cbk) {
+	findOneUser({_id: id}, {password: 0}, cbk);
+}
+
+function updateFieldWithMethod(userId, method, fieldName, fieldValue, cbk){
+	updateOne(usersCollection, { _id: userId }, {
+		[method]: {
+			[fieldName]: fieldValue
+		}
+	}, cbk);
+}
+
+function removeFromArrayFieldById(userId, fieldName, fieldValue, cbk) {
+	updateFieldWithMethod(userId, '$pull', fieldName, fieldValue, cbk);
+}
+
+function addToArrayFieldById(userId, fieldName, fieldValue, cbk) {
+	updateOne(usersCollection, { _id: userId }, {
+		$push: {
+			[fieldName]: {
+				$each: [fieldValue]
+			}
+		}
+	}, cbk);
+}
+
+function updateField(userId, fieldName, fieldValue, cbk) {
+	updateFieldWithMethod(userId, '$set', fieldName, fieldValue, cbk);
+}
+
+function updateArrayItem(userId, arrayName, itemKey, itemValue, cbk) {
+	const query = {
+		_id: userId,
+		[`${arrayName}.${itemKey}`]: itemValue[itemKey]
 	};
 
-	let fakeCollection = {};
-	let fakeDb = {};
-	let fakeFind = {};
-	const noop = () => {}; // eslint-disable-line no-empty-function
+	const update = {
+		$set: {
+			[`${arrayName}.$`]: itemValue
+		}
+	};
 
-	beforeEach(function (done) {
-		fakeCollection = {
-			deleteMany: noop,
-			count: noop,
-			find: noop,
-			insertOne: noop,
-			updateOne: noop,
-			ensureIndex: noop
-		};
+	// first tries to update array item if already exists
+	usersCollection.updateOne(query, update, function (err, updateResult) {
+		if (err) {
+			return cbk(err, null);
+		}
 
-		fakeDb = {
-			collection: noop,
-			close: noop
-		};
-
-		fakeFind = {
-			limit() {
-				return this;
-			},
-			next(cbk) {
-				return cbk(null, null);
-			},
-			toArray: noop
-		};
-
-		sinon.stub(fakeCollection, 'deleteMany').yields();
-		sinon.stub(fakeCollection, 'ensureIndex').yields();
-		sinon.stub(fakeDb, 'collection').returns(fakeCollection);
-		sinon.stub(mongoClient, 'connect').yields(null, fakeDb);
-
-		dao.resetRealmsVariables();
-
-		dao.connect(done);
-	});
-
-	afterEach(function (done) {
-		sinon.stub(fakeDb, 'close').yields(null);
-
-		dao.resetRealmsVariables();
-
-		dao.disconnect(function (err) {
-			assert.equal(err, null);
-
-			mongoClient.connect.restore();
-			return done();
-		});
-	});
-
-	it('count', function (done) {
-		sinon.stub(fakeCollection, 'count').yields(null, 0);
-
-		dao.countUsers(function (err, count) {
-			assert.equal(err, null);
-			assert.equal(count, 0);
-			return done();
-		});
-	});
-
-	it('add', function (done) {
-		const fakeUser = _.assign({_id: baseUser.id}, baseUser);
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeCollection, 'insertOne').onCall(0).yields(null, {insertedId: fakeUser._id});
-		sinon.stub(fakeCollection, 'count').onCall(0).yields(null, 1);
-
-		const expectedUser = _.assign({}, baseUser);
-		dao.addUser(expectedUser, function (err, createdUser) {
-			assert.equal(err, null);
-			assert.equal(createdUser._id, expectedUser.id);
-			assert.equal(createdUser.username, expectedUser.username);
-			assert.equal(createdUser.password, expectedUser.password);
-			return done();
-		});
-	});
-
-	it('getFromUsername', function (done) {
-		const fakeUser = _.assign({_id: baseUser.id}, baseUser);
-		delete(fakeUser.password);
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeFind, 'next').yields(null, fakeUser);
-
-		const expectedUser = _.assign({}, baseUser);
-		dao.getFromUsername(expectedUser.username, function (err, foundUser) {
-			assert.equal(err, null);
-			assert.equal(foundUser.username, expectedUser.username);
-			assert.equal(foundUser.password, undefined);
-			return done();
-		});
-	});
-
-	it('getFromUsername - invalid username', function (done) {
-		dao.getFromUsername(null, function (err) {
-			assert.deepEqual(err, {err: 'invalid_username'});
-			return done();
-		});
-	});
-
-	it('getFromUsername - error 1', function (done) {
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeFind, 'next').yields({err: 'generic_error'}, null);
-
-		dao.getFromUsername('username', function (err) {
-			assert.deepEqual(err, {err: 'generic_error'});
-			return done();
-		});
-	});
-
-	it('getFromUsername - error 2', function (done) {
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeFind, 'next').yields({err: 'generic_error'}, null);
-
-		const expectedUser = _.assign({}, baseUser);
-		dao.getFromUsername(expectedUser.username, function (err) {
-			assert.deepEqual(err, {err: 'generic_error'});
-			return done();
-		});
-	});
-
-	it('getFromUsernamePassword', function (done) {
-		const fakeUser = _.assign({_id: baseUser.id}, baseUser);
-		delete(fakeUser.password);
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeFind, 'next').yields(null, fakeUser);
-
-		const expectedUser = _.assign({}, baseUser);
-		dao.getFromUsernamePassword(expectedUser.username, expectedUser.password, function (err, foundUser) {
-			assert.equal(err, null);
-			assert.equal(foundUser.username, expectedUser.username);
-			assert.equal(foundUser.password, undefined);
-			return done();
-		});
-	});
-
-	it('getFromId', function (done) {
-		const fakeUser = _.assign({_id: baseUser.id}, baseUser);
-		delete(fakeUser.password);
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeFind, 'next').yields(null, fakeUser);
-
-		const expectedUser = _.assign({}, baseUser);
-		dao.getFromId(expectedUser.id, function (err, foundUser) {
-			assert.equal(err, null);
-			assert.equal(foundUser.username, expectedUser.username);
-			assert.equal(foundUser.password, undefined);
-			return done();
-		});
-	});
-
-	it('already exists', function (done) {
-		const fakeUser = _.assign({_id: baseUser.id}, baseUser);
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeFind, 'next').yields(null, fakeUser);
-
-		const expectedUser = _.assign({}, baseUser);
-		dao.addUser(expectedUser, function (err, createdUser) {
-			assert.equal(err.err, 'username_already_exists');
-			assert.equal(createdUser, null);
-			return done();
-		});
-	});
-
-	it('already exists (capitalized username)', function (done) {
-		const fakeUser = _.assign({_id: baseUser.id}, baseUser);
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeFind, 'next').yields(null, fakeUser);
-
-		const expectedUser = _.assign({}, baseUser);
-		expectedUser.username = `UsEr1${config.allowedDomains && config.allowedDomains[0] ? config.allowedDomains[0].replace('*', '') : ''}`;
-		dao.addUser(expectedUser, function (err, createdUser) {
-			assert.equal(err.err, 'username_already_exists');
-			assert.equal(createdUser, null);
-			return done();
-		});
-	});
-
-	it('delete all', function (done) {
-		sinon.stub(fakeCollection, 'count').yields(null, 0);
-
-		dao.deleteAllUsers(function (err) {
-			assert.equal(err, null);
-			dao.countUsers(function (err, count) {
-				assert.equal(err, null);
-				assert.equal(count, 0);
-				return done();
-			});
-		});
-	});
-
-	it('updateFieldWithMethod $set', function (done) {
-		const expectedUser = _.assign({}, baseUser);
-		const expectedField = 'field1';
-		const expectedValue = 'value1';
-
-		fakeCollection.updateOne = function (query, update, cbk) {
-			assert.equal(query._id, expectedUser.id);
-			assert.equal(update.$set[expectedField], expectedValue);
-			cbk(null, { modifiedCount: 1});
-		};
-
-		dao.updateFieldWithMethod(expectedUser.id, '$set', expectedField, expectedValue, function (err, updates) {
-			assert.equal(err, null);
-			assert.deepEqual(updates, 1);
-			return done();
-		});
-	});
-
-	it('updateFieldWithMethod $pull', function (done) {
-		const expectedUser = _.assign({}, baseUser);
-		const expectedField = 'field1';
-		const expectedValue = ['value1', 'value2'];
-
-		fakeCollection.updateOne = function (query, update, cbk) {
-			assert.equal(query._id, expectedUser.id);
-			assert.equal(update.$pull[expectedField], expectedValue);
-			cbk(null, { modifiedCount: 1});
-		};
-
-		dao.updateFieldWithMethod(expectedUser.id, '$pull', expectedField, expectedValue, function (err, updates) {
-			assert.equal(err, null);
-			assert.equal(updates, 1);
-			return done();
-		});
-	});
-
-	it('updateField', function (done) {
-		const expectedUser = _.assign({}, baseUser);
-		const expectedField = 'field1';
-		const expectedValue = 'value1';
-
-		fakeCollection.updateOne = function (query, update, cbk) {
-			assert.equal(query._id, expectedUser.id);
-			assert.equal(update.$set[expectedField], expectedValue);
-			cbk(null, { modifiedCount: 1});
-		};
-
-		dao.updateField(expectedUser.id, expectedField, expectedValue, function (err, updates) {
-			assert.equal(err, null);
-			assert.equal(updates, 1);
-			return done();
-		});
-	});
-
-	it('removeFromArrayFieldById', function (done) {
-		const expectedUser = _.assign({}, baseUser);
-		const expectedField = 'field1';
-		const expectedValue = ['value1', 'value2'];
-
-		fakeCollection.updateOne = function (query, update, cbk) {
-			assert.equal(query._id, expectedUser.id);
-			assert.deepEqual(update.$pull[expectedField], expectedValue);
-			cbk(null, { modifiedCount: 1});
-		};
-
-		dao.removeFromArrayFieldById(expectedUser.id, expectedField, expectedValue, function (err, added) {
-			assert.equal(err, null);
-			assert.equal(added, 1);
-			return done();
-		});
-	});
-
-	it('addToArrayFieldById', function (done) {
-		const expectedUser = _.assign({}, baseUser);
-		const expectedField = 'field1';
-		const expectedValue = ['value1', 'value2'];
-
-		fakeCollection.updateOne = function (query, update, cbk) {
-			assert.equal(query._id, expectedUser.id);
-			assert.deepEqual(update.$push[expectedField], {$each: [expectedValue]});
-			cbk(null, {modifiedCount: 1});
-		};
-
-		dao.addToArrayFieldById(expectedUser.id, expectedField, expectedValue, function (err, added) {
-			assert.equal(err, null);
-			assert.equal(added, 1);
-			return done();
-		});
-	});
-
-	it('getRealms', function (done) {
-		const fakeRealm = {
-			name: 'default',
-			allowedDomains: [
-				'*@vodafone.com',
-				'*@igzinc.com'
-			],
-			capabilities: {
-				news: true,
-				chat: true,
-				call: true
+		if (updateResult.modifiedCount !== 0) {
+			return cbk(null, updateResult.modifiedCount);
+		}
+		updateOne(usersCollection, { _id: userId }, {
+			$push: {
+				[arrayName]: itemValue
 			}
-		};
-		sinon.stub(fakeCollection, 'find').onCall(0).returns(fakeFind);
-		sinon.stub(fakeFind, 'toArray').onCall(0).yields(null, [fakeRealm]);
+		}, cbk);
+	});
+}
 
-		const expectedRealm = _.assign({}, fakeRealm);
-		dao.getRealms(function (err, realms) {
-			assert.equal(err, null);
-			assert.equal(realms.length, 1);
-			assert.deepEqual(realms[0], expectedRealm);
 
-			dao.getRealms(function (err, realms) {
-				assert.equal(err, null);
-				assert.equal(realms.length, 1);
-				assert.deepEqual(realms[0], expectedRealm);
-				return done();
-			});
-		});
+function getAllUsers(cbk){
+	usersCollection.find({}, function(err, users) {
+		if (err) {
+			return cbk(err);
+		}
+
+		if (!users) {
+			return cbk(new Error(ERROR_USER_NOT_FOUND));
+		}
+		cbk(null, users);
 	});
 
-	describe.skip('updateArrayItem', function () {
-		it('Creates array if not exists', function (done) {
-			const expectedUser = _.assign({}, baseUser);
-			const expectedField = 'fieldsArray';
-			const expectedKey = 'field1';
-			const expectedValue = {field1: 'value1', field2: 'value2'};
 
-			let callNumber = 0;
-			fakeCollection.updateOne = function (query, update, cbk) {
-				callNumber++;
-				switch (callNumber) {
-					case 1:
-						return cbk({code: 16836});
-					case 2:
-						assert.deepEqual(query, {_id: expectedUser.id});
-						assert.deepEqual(update, {
-							$addToSet: {
-								fieldsArray: {
-									field1: 'value1',
-									field2: 'value2'
-								}
-							}
-						});
-						return cbk(null, { modifiedCount: 1 });
-				}
-			};
 
-			dao.updateArrayItem(expectedUser.id, expectedField, expectedKey, expectedValue, function (err, updates) {
-				assert.equal(err, null);
-				assert.equal(updates, 1, 'incorrect number of objects updated');
-				return done();
-			});
-		});
+}
 
-		it('Adds items to array', function (done) {
-			const expectedUser = _.assign({}, baseUser);
-			const expectedField = 'fieldsArray';
-			const expectedKey = 'field1';
-			const expectedValue = {field1: 'value1', field2: 'value2'};
-			expectedUser[expectedField] = [];
+function addRealm(realmToAdd, cbk) {
+	realmsCollection.insertOne(realmToAdd, function (err, result) {
+		if (err) {
+			return cbk(err, null);
+		}
 
-			fakeCollection.updateOne = function (query, update, upsert, cbk) {
-				assert.deepEqual(query, {_id: expectedUser.id, 'fieldsArray.field1': 'value1'});
-				assert.deepEqual(update, {$set: {'fieldsArray.$': expectedValue}});
-				assert.deepEqual(upsert, {upsert: true});
-				cbk(null, { modifiedCount: 1});
-			};
-
-			dao.updateArrayItem(expectedUser.id, expectedField, expectedKey, expectedValue, function (err, updates) {
-				assert.equal(err, null);
-				assert.equal(updates, 1, 'incorrect number of objects updated');
-				return done();
-			});
-		});
-
-		it('Updates item in array', function (done) {
-			const expectedUser = _.assign({}, baseUser);
-			const expectedField = 'fieldsArray';
-			const expectedKey = 'key';
-			const expectedValue1 = {key: 'value1', field2: 'value1'};
-			const expectedValue2 = {key: 'value2', field2: 'value2'};
-			expectedUser[expectedField] = [expectedValue1, expectedValue2];
-			const expectedNewValue = {key: 'value2', field2: 'newvalue2'};
-
-			fakeCollection.updateOne = function (query, update, upsert, cbk) {
-				assert.deepEqual(query, {_id: expectedUser.id, 'fieldsArray.key': 'value2'});
-				assert.deepEqual(update, {$set: {'fieldsArray.$': expectedNewValue}});
-				assert.deepEqual(upsert, {upsert: true});
-				cbk(null, { modifiedCount: 1});
-			};
-
-			dao.updateArrayItem(expectedUser.id, expectedField, expectedKey, expectedNewValue, function (err, updates) {
-				assert.equal(err, null);
-				assert.equal(updates, 1, 'incorrect number of objects updated');
-				return done();
-			});
-		});
+		return cbk(null, result);
 	});
+}
 
-});
+function getRealmFromName(name, cbk) {
+	if (!name) {
+		return cbk({err: 'invalid_realm_name', code: 400});
+	}
+	const nameRe = makeRegEx(name);
+	realmsCollection.find({name: nameRe}, {_id: 0}).limit(1).next(function (err, realm) {
+		if (err) {
+			return cbk(err);
+		}
+
+		if (!realm) {
+			return cbk({err: 'realm_not_found', code: 400});
+		}
+		return cbk(null, realm);
+	});
+}
+
+function getRealms(cbk) {
+	const now = new Date().getTime();
+	const timeSinceLastRefresh = now - lastTimeRefresedRealms;
+
+	if (lastTimeRefresedRealms && timeSinceLastRefresh < TIME_TO_REFRESH) {
+		return cbk(null, localStoredRealms);
+	}
+
+	realmsCollection.find({}, {_id: 0}).toArray(function (err, realms) {
+		if (err) {
+			return cbk(null, localStoredRealms);
+		}
+
+		lastTimeRefresedRealms = now;
+		localStoredRealms = realms;
+		return cbk(null, realms);
+	});
+}
+
+function resetRealmsVariables() {
+	localStoredRealms = null;
+	lastTimeRefresedRealms = null;
+}
+
+function deleteAllRealms(cbk) {
+	realmsCollection.deleteMany({}, function (err) {
+		return cbk(err);
+	});
+}
+
+function getStatus(cbk) {
+	if (!db || !usersCollection) {
+		return cbk(MONGO_ERR);
+	}
+	usersCollection.count({}, function (err) {
+		if (err) {
+			return cbk(MONGO_ERR);
+		}
+		return cbk();
+	});
+}
+
+module.exports = {
+	connect,
+	disconnect,
+	addUser,
+	countUsers,
+	getFromUsername,
+	getFromUsernamePassword,
+	deleteAllUsers,
+	getFromId,
+
+	updateField,
+	updateFieldWithMethod,
+	updateArrayItem,
+	addToArrayFieldById,
+	removeFromArrayFieldById,
+	getAllUserFields,
+
+	getAllUsers,
+
+	ERROR_USER_NOT_FOUND,
+	ERROR_USERNAME_ALREADY_EXISTS,
+
+	addRealm,
+	getRealms,
+	getRealmFromName,
+	resetRealmsVariables,
+	deleteAllRealms,
+	findByEmail,
+	getStatus
+};
