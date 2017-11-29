@@ -249,6 +249,23 @@ function updateArrayItem(userId, arrayName, itemKey, itemValue, cbk) {
 	});
 }
 
+
+function getAllUsers(cbk){
+	usersCollection.find({}, function(err, users) {
+		if (err) {
+			return cbk(err);
+		}
+
+		if (!users) {
+			return cbk(new Error(ERROR_USER_NOT_FOUND));
+		}
+		cbk(null, users);
+	});
+
+
+
+}
+
 function addRealm(realmToAdd, cbk) {
 	realmsCollection.insertOne(realmToAdd, function (err, result) {
 		if (err) {
@@ -334,6 +351,8 @@ module.exports = {
 	addToArrayFieldById,
 	removeFromArrayFieldById,
 	getAllUserFields,
+
+	getAllUsers,
 
 	ERROR_USER_NOT_FOUND,
 	ERROR_USERNAME_ALREADY_EXISTS,
