@@ -1,12 +1,12 @@
 'use strict';
 
-var config = require(process.cwd() + '/config.json');
-var tokenMng = require('../../managers/token');
-var sessionRequest = require('./session');
-var log = require('../../logger/service.js');
+const config = require(`${process.cwd()}/config.json`);
+const tokenMng = require('../../managers/token');
+const sessionRequest = require('./session');
+const log = require('../../logger/service.js');
 
 module.exports = function (req, res, next) {
-	var authHeader = req.header('Authorization');
+	let authHeader = req.header('Authorization');
 	if (!authHeader) {
 		log.error({err: 'invalid_access_token', des: 'no authorization header'});
 		res.send(401, {err: 'invalid_access_token', des: 'unable to read token info'});
@@ -21,27 +21,27 @@ module.exports = function (req, res, next) {
 		return next(false);
 	}
 
-	var accessToken = authHeader.substring(config.authHeaderKey.length);
+	let accessToken = authHeader.substring(config.authHeaderKey.length);
 
 	tokenMng.getAccessTokenInfo(accessToken, function (err, tokenInfo) {
 		if (err) {
-			console.log(err);
+			log.error({err});
 			log.error({err: 'invalid_access_token', des: accessToken});
 			res.send(401, {err: 'invalid_access_token', des: 'unable to read token info'});
 			return next(false);
-		} else {
-			var userAgent = String(req.headers['user-agent']);
-			var userId = tokenInfo.userId;
-			var deviceId = tokenInfo.data.deviceId;
-			tokenMng.invalidateAccessToken(accessToken, function (invalidateError, data) {
+		}
+			let userAgent = String(req.headers['user-agent']);
+			let userId = tokenInfo.userId;
+			let deviceId = tokenInfo.data.deviceId;
+			tokenMng.invalidateAccessToken(accessToken, function (invalidateError) {
 				if (invalidateError){
-					console.error('Error while invalidating token');
+					log.error({err: 'Error while invalidating token'});
 				} else {
-					console.log('Token invalidated');
+					log.error({err: 'Token invalidated'});
 				}
 				sessionRequest(deviceId, userId, 'DELETE', userAgent, function (err, result) {
 					if (err) {
-						log.error({err: err, result: result}, 'RemoveDeviceResponse');
+						log.error({ err, result}, 'RemoveDeviceResponse');
 						res.send(500, {err: 'internal_session_error', des: 'unable to close session'});
 						return next(false);
 					}
@@ -49,7 +49,5 @@ module.exports = function (req, res, next) {
 					return next();
 				});
 			});
-
-		}
 	});
 };

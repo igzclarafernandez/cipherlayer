@@ -48,10 +48,10 @@ function randomPassword(passwordRegex) {
 
 
 function decryptAES(text){
-	var algorithm = 'aes-256-ctr';
+	const algorithm = 'aes-256-ctr';
 
-	var decipher = crypto.createDecipher(algorithm,_settings.encryptPassword)
-	var dec = decipher.update(text,'hex','utf8');
+	let decipher = crypto.createDecipher(algorithm,_settings.encryptPassword);
+	let dec = decipher.update(text,'hex','utf8');
 	dec += decipher.final('utf8');
 	return dec;
 }

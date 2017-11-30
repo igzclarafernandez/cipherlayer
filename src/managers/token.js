@@ -4,7 +4,7 @@ const async = require('async');
 const isFunction = require('lodash/isFunction');
 const ciphertoken = require('ciphertoken');
 const config = require('../../config');
-var redis = require('./redis');
+const redis = require('./redis');
 
 const log = require('../logger/service');
 
@@ -84,33 +84,32 @@ function createBothTokens(userId, data, cbk) {
 function invalidateAccessToken(accessToken, callback) {
 	redis.getKeyValue(accessToken, function (notFoundErr, res){
 		if ( notFoundErr){
-			console.log(notFoundErr);
+			log.error({err_notFoundErr: notFoundErr});
 		}
 		if ( res ){
-			callback({'err': 'already invalidated'});
-		} else {
-			getAccessTokenInfo(accessToken, function (infoErr, info ){
-				var ttl = info.expiresAtTimestamp ?
-					Math.floor(info.expiresAtTimestamp /1000) - Math.floor(new Date().getTime()/1000):
-					config.accessToken.expiration;
-				redis.insertKeyValue(accessToken, accessToken, ttl, function (err, data) {
-					if ( err ) console.error(err + " Data:" + data);
-					callback();
-				});
-			});
-
+			return callback({err: 'already invalidated'});
 		}
+		getAccessTokenInfo(accessToken, function (infoErr, info ){
+			let ttl = info.expiresAtTimestamp ?
+				Math.floor(info.expiresAtTimestamp /1000) - Math.floor(new Date().getTime()/1000):
+				config.accessToken.expiration;
+			redis.insertKeyValue(accessToken, accessToken, ttl, function (err, data) {
+				if ( err ){
+					log.error({err_info: err, data_err: data});
+				}
+				return callback();
+			});
+		});
+
 	});
 }
 
 function isInvalidatedAccessToken(accessToken, callback) {
-	redis.getKeyValue('' + accessToken, function (err, tokenData) {
-
+	redis.getKeyValue(accessToken.toString(), function (err, tokenData) {
 		if(err) {
-			callback(err);
-		} else {
-			callback(null, tokenData);
+			return callback(err);
 		}
+		return callback(null, tokenData);
 	});
 }
 
