@@ -1,7 +1,7 @@
 {
-  "name": "cipherlayer",
+  "name": "cipherlayer-radar",
   "version": "0.0.1",
-  "description": "cipherlayer",
+  "description": "cipherlayer-radar",
   "main": "src/cipherlayer.js",
   "scripts": {
     "test": "npm run lint && npm run test-unit && npm run test-acceptance",
@@ -62,14 +62,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/thegameofcode/cipherlayer.git"
+    "url": "https://github.com/igzclarafernandez/cipherlayer.git"
   },
-  "author": "luismesas",
+  "author": "igz_radar",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/thegameofcode/cipherlayer/issues"
+    "url": "https://github.com/igzclarafernandez/cipherlayer/issues"
   },
-  "homepage": "https://github.com/thegameofcode/cipherlayer",
+  "homepage": "https://github.com/igzclarafernandez/cipherlayer",
   "pre-commit": [
     "lint"
   ]
