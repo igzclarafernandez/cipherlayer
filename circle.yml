@@ -7,13 +7,13 @@ machine:
 general:
   artifacts:
     - $CIRCLE_TEST_REPORTS
-test:
-  pre:
-    - cp config_sample.json config.json
-    - mkdir -p $CIRCLE_TEST_REPORTS/mocha
-    - mkdir -p $CIRCLE_TEST_REPORTS/cucumber
-    - mkdir -p $CIRCLE_TEST_REPORTS/coverage
-  override:
+#test:
+#  pre:
+#    - cp config_sample.json config.json
+#    - mkdir -p $CIRCLE_TEST_REPORTS/mocha
+#    - mkdir -p $CIRCLE_TEST_REPORTS/cucumber
+#    - mkdir -p $CIRCLE_TEST_REPORTS/coverage
+#  override:
     # TODO. ADD THE FOLLOWING STEPS
     # - npm run test-ci
     #- npm run test
