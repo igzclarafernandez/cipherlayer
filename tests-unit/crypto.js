@@ -11,19 +11,7 @@ const defaultSettings = {
 
 describe('crypto', function () {
 
-	const cipher = crypto.createCipher(defaultSettings.algorithm, defaultSettings.encryptPassword);
 
-	it('encrypt', function (done) {
-
-		const cryptoMng = require('../src/managers/crypto')(config.password);
-		const value = 'Hello world';
-		cryptoMng.encrypt(value, function (cryptedResult) {
-			let expectedValue = cipher.update(value, 'utf8', 'hex');
-			expectedValue += cipher.final('hex');
-			assert.equal(cryptedResult, expectedValue);
-			return done();
-		});
-	});
 
 	it('creates a valid random password', function () {
 
