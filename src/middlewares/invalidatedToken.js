@@ -1,3 +1,5 @@
+'use strict';
+
 const tokenMng = require('../managers/token');
 const config = require(`${process.cwd()}/config.json`);
 const log = require('../logger/service.js');
